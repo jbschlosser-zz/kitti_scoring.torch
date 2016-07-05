@@ -39,8 +39,6 @@ const int32_t MIN_HEIGHT[3]     = {40, 25, 25};     // minimum height for evalua
 const int32_t MAX_OCCLUSION[3]  = {0, 1, 2};        // maximum occlusion level of the groundtruth used for evaluation
 const double  MAX_TRUNCATION[3] = {0.15, 0.3, 0.5}; // maximum truncation level of the groundtruth used for evaluation
 
-// evaluated object classes
-enum CLASSES{CAR=0, PEDESTRIAN=1, CYCLIST=2};
 
 // parameters varying per class
 vector<string> CLASS_NAMES;
@@ -117,16 +115,10 @@ FUNCTIONS TO LOAD DETECTION AND GROUND TRUTH DATA ONCE, SAVE RESULTS
 =======================================================================*/
 
 template <class T>
-vector<tDetection> loadDetections(T& input_stream, bool &compute_aos, bool &eval_car, bool &eval_pedestrian, bool &eval_cyclist, bool &success) {
+vector<tDetection> loadDetections(T& input_stream, bool &compute_aos, bool &success) {
 
   // holds all detections (ignored detections are indicated by an index vector
   vector<tDetection> detections;
-  /*FILE *fp = fopen(file_name.c_str(),"r");
-  if (!fp) {
-    success = false;
-    return detections;
-  }
-  while (!feof(fp)) {*/
   while(input_stream.good()) {
     std::string line;
     std::getline(input_stream, line);
@@ -144,14 +136,6 @@ vector<tDetection> loadDetections(T& input_stream, bool &compute_aos, bool &eval
       // orientation=-10 is invalid, AOS is not evaluated if at least one orientation is invalid
       if(d.box.alpha==-10)
         compute_aos = false;
-
-      // a class is only evaluated if it is detected at least once
-      if(!eval_car && !strcasecmp(d.box.type.c_str(), "car"))
-        eval_car = true;
-      if(!eval_pedestrian && !strcasecmp(d.box.type.c_str(), "pedestrian"))
-        eval_pedestrian = true;
-      if(!eval_cyclist && !strcasecmp(d.box.type.c_str(), "cyclist"))
-        eval_cyclist = true;
     }
   }
   //fclose(fp);
@@ -284,7 +268,7 @@ vector<double> getThresholds(vector<double> &v, double n_groundtruth){
   return t;
 }
 
-void cleanData(CLASSES current_class, const vector<tGroundtruth> &gt, const vector<tDetection> &det, vector<int32_t> &ignored_gt, vector<tGroundtruth> &dc, vector<int32_t> &ignored_det, int32_t &n_gt, DIFFICULTY difficulty){
+void cleanData(const std::string& class_name, const vector<tGroundtruth> &gt, const vector<tDetection> &det, vector<int32_t> &ignored_gt, vector<tGroundtruth> &dc, vector<int32_t> &ignored_det, int32_t &n_gt, DIFFICULTY difficulty){
 
   // extract ground truth bounding boxes for current evaluation class
   for(int32_t i=0;i<gt.size(); i++){
@@ -297,13 +281,13 @@ void cleanData(CLASSES current_class, const vector<tGroundtruth> &gt, const vect
     int32_t valid_class;
 
     // all classes without a neighboring class
-    if(!strcasecmp(gt[i].box.type.c_str(), CLASS_NAMES[current_class].c_str()))
+    if(!strcasecmp(gt[i].box.type.c_str(), class_name.c_str()))
       valid_class = 1;
 
     // classes with a neighboring class
-    else if(!strcasecmp(CLASS_NAMES[current_class].c_str(), "Pedestrian") && !strcasecmp("Person_sitting", gt[i].box.type.c_str()))
+    else if(!strcasecmp(class_name.c_str(), "Pedestrian") && !strcasecmp("Person_sitting", gt[i].box.type.c_str()))
       valid_class = 0;
-    else if(!strcasecmp(CLASS_NAMES[current_class].c_str(), "Car") && !strcasecmp("Van", gt[i].box.type.c_str()))
+    else if(!strcasecmp(class_name.c_str(), "Car") && !strcasecmp("Van", gt[i].box.type.c_str()))
       valid_class = 0;
 
     // classes not used for evaluation
@@ -342,7 +326,7 @@ void cleanData(CLASSES current_class, const vector<tGroundtruth> &gt, const vect
 
     // neighboring classes are not evaluated
     int32_t valid_class;
-    if(!strcasecmp(det[i].box.type.c_str(), CLASS_NAMES[current_class].c_str()))
+    if(!strcasecmp(det[i].box.type.c_str(), class_name.c_str()))
       valid_class = 1;
     else
       valid_class = -1;
@@ -355,7 +339,7 @@ void cleanData(CLASSES current_class, const vector<tGroundtruth> &gt, const vect
   }
 }
 
-tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt, const vector<tDetection> &det, const vector<tGroundtruth> &dc, const vector<int32_t> &ignored_gt, const vector<int32_t>  &ignored_det, bool compute_fp, bool compute_aos=false, double thresh=0, bool debug=false){
+tPrData computeStatistics(double minOverlap, const vector<tGroundtruth> &gt, const vector<tDetection> &det, const vector<tGroundtruth> &dc, const vector<int32_t> &ignored_gt, const vector<int32_t>  &ignored_det, bool compute_fp, bool compute_aos=false, double thresh=0, bool debug=false){
 
   tPrData stat = tPrData();
   const double NO_DETECTION = -10000000;
@@ -401,20 +385,20 @@ tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt,
       double overlap = boxoverlap(det[j].box, gt[i].box);
 
       // for computing recall thresholds, the candidate with highest score is considered
-      if(!compute_fp && overlap>MIN_OVERLAP[current_class] && det[j].thresh>valid_detection){
+      if(!compute_fp && overlap>minOverlap && det[j].thresh>valid_detection){
         det_idx         = j;
         valid_detection = det[j].thresh;
       }
 
       // for computing pr curve values, the candidate with the greatest overlap is considered
       // if the greatest overlap is an ignored detection (min_height), the overlapping detection is used
-      else if(compute_fp && overlap>MIN_OVERLAP[current_class] && (overlap>max_overlap || assigned_ignored_det) && ignored_det[j]==0){
+      else if(compute_fp && overlap>minOverlap && (overlap>max_overlap || assigned_ignored_det) && ignored_det[j]==0){
         max_overlap     = overlap;
         det_idx         = j;
         valid_detection = 1;
         assigned_ignored_det = false;
       }
-      else if(compute_fp && overlap>MIN_OVERLAP[current_class] && valid_detection==NO_DETECTION && ignored_det[j]==1){
+      else if(compute_fp && overlap>minOverlap && valid_detection==NO_DETECTION && ignored_det[j]==1){
         det_idx              = j;
         valid_detection      = 1;
         assigned_ignored_det = true;
@@ -475,7 +459,7 @@ tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt,
 
         // compute overlap and assign to stuff area, if overlap exceeds class specific value
         double overlap = boxoverlap(det[j].box, dc[i].box, 0);
-        if(overlap>MIN_OVERLAP[current_class]){
+        if(overlap>minOverlap){
           assigned_detection[j] = true;
           nstuff++;
         }
@@ -514,7 +498,7 @@ tPrData computeStatistics(CLASSES current_class, const vector<tGroundtruth> &gt,
 EVALUATE CLASS-WISE
 =======================================================================*/
 
-bool eval_class (CLASSES current_class,const vector< vector<tGroundtruth> > &groundtruth,const vector< vector<tDetection> > &detections, bool compute_aos, vector<double> &precision, vector<double> &aos, DIFFICULTY difficulty) {
+bool eval_class (const ClassData& current_class,const vector< vector<tGroundtruth> > &groundtruth,const vector< vector<tDetection> > &detections, bool compute_aos, vector<double> &precision, vector<double> &aos, DIFFICULTY difficulty) {
 
   // init
   int32_t n_gt=0;                                     // total no. of gt (denominator of recall)
@@ -530,14 +514,14 @@ bool eval_class (CLASSES current_class,const vector< vector<tGroundtruth> > &gro
     vector<tGroundtruth> dc;
 
     // only evaluate objects of current class and ignore occluded, truncated objects
-    cleanData(current_class, groundtruth[i], detections[i], i_gt, dc, i_det, n_gt, difficulty);
+    cleanData(current_class.name, groundtruth[i], detections[i], i_gt, dc, i_det, n_gt, difficulty);
     ignored_gt.push_back(i_gt);
     ignored_det.push_back(i_det);
     dontcare.push_back(dc);
 
     // compute statistics to get recall values
     tPrData pr_tmp = tPrData();
-    pr_tmp = computeStatistics(current_class, groundtruth[i], detections[i], dc, i_gt, i_det, false);
+    pr_tmp = computeStatistics(current_class.minOverlap, groundtruth[i], detections[i], dc, i_gt, i_det, false);
 
     // add detection scores to vector over all images
     for(int32_t j=0; j<pr_tmp.v.size(); j++)
@@ -555,7 +539,7 @@ bool eval_class (CLASSES current_class,const vector< vector<tGroundtruth> > &gro
     // for all scores/recall thresholds do:
     for(int32_t t=0; t<thresholds.size(); t++){
       tPrData tmp = tPrData();
-      tmp = computeStatistics(current_class, groundtruth[i], detections[i], dontcare[i],
+      tmp = computeStatistics(current_class.minOverlap, groundtruth[i], detections[i], dontcare[i],
                               ignored_gt[i], ignored_det[i], true, compute_aos, thresholds[t], t==38);
 
       // add no. of TP, FP, FN, AOS for current frame to total evaluation for current threshold
@@ -678,6 +662,7 @@ std::vector<double> calcAP(const std::vector<double> precision[3]) {
 bool score_kitti(const std::string& gt_dir,
                  const std::set<int>& image_set,
                  const std::string& results_dir,
+                 const std::vector<ClassData>& classes_to_score,
                  //const std::map<int, std::string>& detection_strings,
                  AveragePrecisionResults& results) {
 
@@ -693,7 +678,11 @@ bool score_kitti(const std::string& gt_dir,
 
   // holds whether orientation similarity shall be computed (might be set to false while loading detections)
   // and which labels where provided by this submission
-  bool compute_aos=true, eval_car=false, eval_pedestrian=false, eval_cyclist=false;
+  bool compute_aos=true;
+  vector<bool> shouldEvalClass;
+  for(int i = 0; i < classes_to_score.size(); ++i) {
+      shouldEvalClass.push_back(false);
+  }
 
   // for all images read groundtruth and detections
   for(std::set<int>::const_iterator image_num = image_set.begin();
@@ -712,8 +701,17 @@ bool score_kitti(const std::string& gt_dir,
 
     // Load detections from file.
     std::ifstream result_file((results_dir + "/" + file_name).c_str());
-    vector<tDetection> det = loadDetections(result_file, compute_aos, eval_car, eval_pedestrian,
-        eval_cyclist,det_success);
+    vector<tDetection> det = loadDetections(result_file, compute_aos, det_success);
+
+    // Check which classes should be evaluated (only ones that have been seen at least
+    // once in the detections).
+    for(vector<tDetection>::const_iterator d = det.begin(); d != det.end(); ++d) {
+        for(int i = 0; i < classes_to_score.size(); ++i) {
+            if(!strcasecmp(classes_to_score[i].name.c_str(), d->box.type.c_str())) {
+                shouldEvalClass[i] = true;
+            }
+        }
+    }
     result_file.close();
     groundtruth.push_back(gt);
     detections.push_back(det);
@@ -727,49 +725,20 @@ bool score_kitti(const std::string& gt_dir,
     }
   }
 
-  // eval cars
-  if(eval_car){
-    vector<double> precision[3], aos[3];
-    if(   !eval_class(CAR,groundtruth,detections,compute_aos,precision[0],aos[0],EASY)
-       || !eval_class(CAR,groundtruth,detections,compute_aos,precision[1],aos[1],MODERATE)
-       || !eval_class(CAR,groundtruth,detections,compute_aos,precision[2],aos[2],HARD)){
-      return false;
-    }
-    results.car_aps = calcAP(precision);
-    /*saveAndPlotPlots(plot_dir,CLASS_NAMES[CAR] + "_detection",CLASS_NAMES[CAR],precision,0);
-    if(compute_aos){
-      saveAndPlotPlots(plot_dir,CLASS_NAMES[CAR] + "_orientation",CLASS_NAMES[CAR],aos,1);
-    }*/
-  }
+  // Evaluate each of the classes.
+  for(int i = 0; i < classes_to_score.size(); ++i) {
+      if(shouldEvalClass[i]) {
+          vector<double> precision[3], aos[3];
+          if(!eval_class(classes_to_score[i],groundtruth,detections,compute_aos,precision[0],aos[0],EASY)
+            || !eval_class(classes_to_score[i],groundtruth,detections,compute_aos,precision[1],aos[1],MODERATE)
+            || !eval_class(classes_to_score[i],groundtruth,detections,compute_aos,precision[2],aos[2],HARD))
+          {
+              return false;
+          }
 
-  // eval pedestrians
-  if(eval_pedestrian){
-    vector<double> precision[3], aos[3];
-    if(   !eval_class(PEDESTRIAN,groundtruth,detections,compute_aos,precision[0],aos[0],EASY)
-       || !eval_class(PEDESTRIAN,groundtruth,detections,compute_aos,precision[1],aos[1],MODERATE)
-       || !eval_class(PEDESTRIAN,groundtruth,detections,compute_aos,precision[2],aos[2],HARD)){
-      return false;
-    }
-    results.pedestrian_aps = calcAP(precision);
-    /*saveAndPlotPlots(plot_dir,CLASS_NAMES[PEDESTRIAN] + "_detection",CLASS_NAMES[PEDESTRIAN],precision,0);
-    if(compute_aos){
-      saveAndPlotPlots(plot_dir,CLASS_NAMES[PEDESTRIAN] + "_orientation",CLASS_NAMES[PEDESTRIAN],aos,1);
-    }*/
-  }
-
-  // eval cyclists
-  if(eval_cyclist){
-    vector<double> precision[3], aos[3];
-    if(   !eval_class(CYCLIST,groundtruth,detections,compute_aos,precision[0],aos[0],EASY)
-       || !eval_class(CYCLIST,groundtruth,detections,compute_aos,precision[1],aos[1],MODERATE)
-       || !eval_class(CYCLIST,groundtruth,detections,compute_aos,precision[2],aos[2],HARD)){
-      return false;
-    }
-    results.cyclist_aps = calcAP(precision);
-    /*saveAndPlotPlots(plot_dir,CLASS_NAMES[CYCLIST] + "_detection",CLASS_NAMES[CYCLIST],precision,0);
-    if(compute_aos){
-      saveAndPlotPlots(plot_dir,CLASS_NAMES[CYCLIST] + "_orientation",CLASS_NAMES[CYCLIST],aos,1);
-    }*/
+          std::vector<double> aps = calcAP(precision);
+          results.aps.push_back(std::make_pair(classes_to_score[i].name, aps));
+      }
   }
 
   // success
@@ -778,7 +747,7 @@ bool score_kitti(const std::string& gt_dir,
 
 // Lua stuff.
 static int lua_score_kitti(lua_State *L) {
-    std::string usage_msg = "Usage: score_kitti <gt_dir> <image_set> <results_dir>";
+    std::string usage_msg = "Usage: score_kitti <gt_dir> <image_set> <results_dir> <classes_to_score>";
 
     // Parse the gt dir.
     size_t gt_dir_len;
@@ -813,10 +782,74 @@ static int lua_score_kitti(lua_State *L) {
     }
     std::string results_dir(results_dir_c_str, results_dir_len);
 
+    // Parse the classes to score; expecting name and min overlap for each.
+    std::vector<ClassData> classes_to_score;
+    if(lua_istable(L, 4) == 0) {
+        return luaL_error(L, usage_msg.c_str());
+    }
+    lua_pushnil(L); // first key
+    while(lua_next(L, 4) != 0) {
+        // Sub-table.
+        if(lua_istable(L, -1) == 0) {
+            return luaL_error(L, usage_msg.c_str());
+        }
+
+        // Get name from sub-table.
+        ClassData classData;
+        lua_pushstring(L, "name");
+        lua_gettable(L, -2);
+        size_t name_len;
+        const char *name_c_str = lua_tolstring(L, -1, &name_len);
+        if(name_c_str == NULL) {
+            return luaL_error(L, usage_msg.c_str());
+        }
+        classData.name = std::string(name_c_str, name_len);
+        lua_pop(L, 1);
+
+        // Get min overlap from sub-table.
+        lua_pushstring(L, "minOverlap");
+        lua_gettable(L, -2);
+        if(lua_isnumber(L, -1) == 0) {
+            return luaL_error(L, usage_msg.c_str());
+        }
+        classData.minOverlap = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+
+        // Store class data.
+        classes_to_score.push_back(classData);
+
+        // Go to next sub-table.
+        lua_pop(L, 1);
+    }
+
     // Run the scoring function.
     AveragePrecisionResults results;
+    if(!score_kitti(gt_dir, image_set, results_dir, classes_to_score, results)) {
+        return luaL_error(L, "An error occurred when calculating scores");
+    }
+
+    lua_createtable(L, results.aps.size(), 0);
+    for(std::vector<std::pair<std::string, std::vector<double> > >::const_iterator result = results.aps.begin();
+        result != results.aps.end();
+        ++result)
+    {
+        // Create the table of results.
+        lua_pushstring(L, result->first.c_str());
+        lua_newtable(L);
+        for(int i = 0; i < result->second.size(); ++i) {
+            lua_pushnumber(L, i + 1);
+            lua_pushnumber(L, result->second[i]);
+            lua_settable(L, -3);
+        }
+        lua_settable(L, -3);
+    }
+
+    return 1;
+
+    // Run the scoring function.
+    /*AveragePrecisionResults results;
     if(!score_kitti(gt_dir, image_set, results_dir, results)) {
-        return luaL_error(L, "An error occurred when calculating scores (detection strings may not be in the right format)");
+        return luaL_error(L, "An error occurred when calculating scores");
     }
 
     // Create car results.
@@ -851,7 +884,7 @@ static int lua_score_kitti(lua_State *L) {
     lua_settable(L, -3);
 
     // Return the table.
-    return 1;
+    return 1;*/
 }
 
 static const struct luaL_reg kitti_scoring[] = {
